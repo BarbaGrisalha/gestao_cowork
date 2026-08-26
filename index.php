@@ -38,6 +38,7 @@ $rentalTypeLabels = [
 
 $dataDir = __DIR__ . '/data';
 $bookingsFile = $dataDir . '/bookings.json';
+$clientsFile = $dataDir . '/clients.json';
 
 if (!is_dir($dataDir)) {
     mkdir($dataDir, 0775, true);
@@ -45,6 +46,10 @@ if (!is_dir($dataDir)) {
 
 if (!file_exists($bookingsFile)) {
     file_put_contents($bookingsFile, json_encode([], JSON_PRETTY_PRINT));
+}
+
+if (!file_exists($clientsFile)) {
+    file_put_contents($clientsFile, json_encode([], JSON_PRETTY_PRINT));
 }
 
 function loadBookings(string $bookingsFile): array
@@ -66,6 +71,24 @@ function saveBookings(string $bookingsFile, array $bookings): bool
     }
 
     return file_put_contents($bookingsFile, $json, LOCK_EX) !== false;
+}
+
+function loadClients(string $clientsFile): array
+{
+    $raw = file_get_contents($clientsFile);
+    if ($raw === false || trim($raw) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function clientDisplayName(array $client): string
+{
+    $first = trim((string) ($client['first_name'] ?? ''));
+    $last = trim((string) ($client['last_name'] ?? ''));
+    return trim($first . ' ' . $last);
 }
 
 function h(?string $value): string
@@ -225,16 +248,23 @@ if (($_POST['action'] ?? '') === 'login') {
 
 $isAuthenticated = (bool) ($_SESSION['authenticated'] ?? false);
 $bookings = loadBookings($bookingsFile);
+$clients = loadClients($clientsFile);
+$clientsById = [];
+foreach ($clients as $client) {
+    if (isset($client['id'])) {
+        $clientsById[$client['id']] = $client;
+    }
+}
 
 if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
-    $clientName = trim((string) ($_POST['client_name'] ?? ''));
+    $clientId = trim((string) ($_POST['client_id'] ?? ''));
     $space = (string) ($_POST['space'] ?? '');
     $rentalType = (string) ($_POST['rental_type'] ?? '');
     $startRaw = (string) ($_POST['start_datetime'] ?? '');
     $endRaw = trim((string) ($_POST['end_datetime'] ?? ''));
 
-    if ($clientName === '') {
-        $errors[] = 'Informe o nome do cliente.';
+    if ($clientId === '' || !isset($clientsById[$clientId])) {
+        $errors[] = 'Selecione um cliente valido a partir do cadastro.';
     }
 
     if (!isset($spaces[$space])) {
@@ -318,13 +348,16 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
         }
 
         if (!$errors) {
+            $selectedClient = $clientsById[$clientId];
+            $selectedClientName = clientDisplayName($selectedClient);
             $subtotal = computeBasePrice($rentalType, $normalizedStart, $normalizedEnd);
             $vatValue = round($subtotal * VAT_RATE, 2);
             $total = round($subtotal + $vatValue, 2);
 
             $bookings[] = [
                 'id' => bin2hex(random_bytes(8)),
-                'client_name' => $clientName,
+                'client_id' => $clientId,
+                'client_name' => $selectedClientName,
                 'space' => $space,
                 'space_label' => $spaces[$space]['label'],
                 'rental_type' => $rentalType,
@@ -363,6 +396,7 @@ $roundedTimestamp = (int) (ceil($nowDefault->getTimestamp() / 300) * 300);
 $nowDefault = (new DateTimeImmutable('now'))->setTimestamp($roundedTimestamp);
 $defaultStartValue = toDatetimeLocalValue($nowDefault);
 $defaultEndValue = toDatetimeLocalValue($nowDefault->modify('+1 hour'));
+$hasClients = count($clients) > 0;
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -613,7 +647,10 @@ $defaultEndValue = toDatetimeLocalValue($nowDefault->modify('+1 hour'));
                         <h1>Painel de Administracao</h1>
                         <p>Locacoes: segunda a sexta, das 08:30h as 19:30h</p>
                     </div>
-                    <a class="btn-ghost" href="?logout=1">Terminar sessao</a>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <a class="btn-ghost" href="clientes.php">Cadastro de Clientes</a>
+                        <a class="btn-ghost" href="?logout=1">Terminar sessao</a>
+                    </div>
                 </div>
 
                 <?php if ($success !== null): ?>
@@ -624,13 +661,28 @@ $defaultEndValue = toDatetimeLocalValue($nowDefault->modify('+1 hour'));
                     <div class="notice err"><?= h($error) ?></div>
                 <?php endforeach; ?>
 
+                <?php if (!$hasClients): ?>
+                    <div class="notice err">Nao ha clientes cadastrados. Cadastre primeiro em "Cadastro de Clientes".</div>
+                <?php endif; ?>
+
                 <form method="post" autocomplete="off">
                     <input type="hidden" name="action" value="create_booking">
 
                     <div class="form-grid">
                         <div class="field full">
-                            <label for="client_name">Cliente</label>
-                            <input id="client_name" name="client_name" required placeholder="Nome do cliente">
+                            <label for="client_filter">Cliente (buscar por nome + apelido)</label>
+                            <input id="client_filter" type="search" placeholder="Digite nome ou apelido para filtrar" <?= $hasClients ? '' : 'disabled' ?>>
+                        </div>
+
+                        <div class="field full">
+                            <label for="client_id">Selecionar cliente registado</label>
+                            <select id="client_id" name="client_id" required <?= $hasClients ? '' : 'disabled' ?>>
+                                <option value="">Selecione...</option>
+                                <?php foreach ($clients as $client): ?>
+                                    <?php $displayName = clientDisplayName($client); ?>
+                                    <option value="<?= h((string) $client['id']) ?>"><?= h($displayName) ?> · NIF <?= h((string) ($client['nif'] ?? '')) ?></option>
+                                <?php endforeach; ?>
+                            </select>
                         </div>
 
                         <div class="field">
@@ -663,7 +715,7 @@ $defaultEndValue = toDatetimeLocalValue($nowDefault->modify('+1 hour'));
                         </div>
 
                         <div class="field full">
-                            <button type="submit">Registar locacao</button>
+                            <button type="submit" <?= $hasClients ? '' : 'disabled' ?>>Registar locacao</button>
                         </div>
                     </div>
                 </form>
@@ -729,6 +781,49 @@ $defaultEndValue = toDatetimeLocalValue($nowDefault->modify('+1 hour'));
 
             rentalType.addEventListener('change', toggleEndField);
             toggleEndField();
+        })();
+
+        (function() {
+            const filterInput = document.getElementById('client_filter');
+            const select = document.getElementById('client_id');
+            if (!filterInput || !select) {
+                return;
+            }
+
+            const options = Array.from(select.options).map((opt) => ({
+                value: opt.value,
+                text: opt.textContent || ''
+            }));
+
+            function applyFilter() {
+                const query = filterInput.value.trim().toLowerCase();
+                const previous = select.value;
+
+                select.innerHTML = '';
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = 'Selecione...';
+                select.appendChild(placeholder);
+
+                options.forEach((item) => {
+                    if (item.value === '') {
+                        return;
+                    }
+                    if (query && !item.text.toLowerCase().includes(query)) {
+                        return;
+                    }
+                    const opt = document.createElement('option');
+                    opt.value = item.value;
+                    opt.textContent = item.text;
+                    select.appendChild(opt);
+                });
+
+                if (Array.from(select.options).some((o) => o.value === previous)) {
+                    select.value = previous;
+                }
+            }
+
+            filterInput.addEventListener('input', applyFilter);
         })();
     </script>
 </body>
