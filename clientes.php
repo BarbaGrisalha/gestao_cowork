@@ -53,26 +53,26 @@ function normalizeNif(string $nif): string
     return preg_replace('/\D+/', '', $nif) ?? '';
 }
 
-$errors = [];
-$success = null;
-$clients = loadClients($clientsFile);
-
-$form = [
-    'first_name' => '',
-    'last_name' => '',
-    'nif' => '',
-    'email' => '',
-    'phone' => '',
-    'address' => '',
-    'postal_code' => '',
-    'municipio' => '',
-    'conselho' => '',
-];
-
-if (($_POST['action'] ?? '') === 'create_client') {
-    foreach ($form as $key => $_) {
-        $form[$key] = trim((string) ($_POST[$key] ?? ''));
+function clientStatus(array $client, ?DateTimeImmutable $now = null): string
+{
+    if (($client['status'] ?? '') === 'cancelado') {
+        return 'cancelado';
     }
+
+    $now ??= new DateTimeImmutable('now');
+    $lastUpdatedRaw = (string) ($client['last_updated_at'] ?? $client['created_at'] ?? '');
+    $lastUpdated = DateTimeImmutable::createFromFormat(DateTimeInterface::ATOM, $lastUpdatedRaw);
+
+    if ($lastUpdated === false || $lastUpdated->modify('+12 months') <= $now) {
+        return 'pendente_atualizacao';
+    }
+
+    return 'ativo';
+}
+
+function validateClientData(array $form, array $clients, ?string $currentId = null): array
+{
+    $errors = [];
 
     if ($form['first_name'] === '') {
         $errors[] = 'Nome e obrigatorio.';
@@ -108,12 +108,44 @@ if (($_POST['action'] ?? '') === 'create_client') {
     }
 
     foreach ($clients as $client) {
+        if (($client['id'] ?? '') === $currentId) {
+            continue;
+        }
+
         $existingNif = normalizeNif((string) ($client['nif'] ?? ''));
         if ($existingNif !== '' && $existingNif === $normalizedNif) {
             $errors[] = 'Ja existe um cliente com este NIF.';
             break;
         }
     }
+
+    return $errors;
+}
+
+$errors = [];
+$success = null;
+$clients = loadClients($clientsFile);
+$now = new DateTimeImmutable('now');
+
+$form = [
+    'first_name' => '',
+    'last_name' => '',
+    'nif' => '',
+    'email' => '',
+    'phone' => '',
+    'address' => '',
+    'postal_code' => '',
+    'municipio' => '',
+    'conselho' => '',
+];
+
+if (($_POST['action'] ?? '') === 'create_client') {
+    foreach ($form as $key => $_) {
+        $form[$key] = trim((string) ($_POST[$key] ?? ''));
+    }
+
+    $normalizedNif = normalizeNif($form['nif']);
+    $errors = validateClientData($form, $clients);
 
     if (!$errors) {
         $clients[] = [
@@ -127,7 +159,9 @@ if (($_POST['action'] ?? '') === 'create_client') {
             'postal_code' => $form['postal_code'],
             'municipio' => $form['municipio'],
             'conselho' => $form['conselho'],
-            'created_at' => (new DateTimeImmutable('now'))->format(DateTimeInterface::ATOM),
+            'status' => 'ativo',
+            'created_at' => $now->format(DateTimeInterface::ATOM),
+            'last_updated_at' => $now->format(DateTimeInterface::ATOM),
         ];
 
         usort($clients, static function (array $a, array $b): int {
@@ -144,6 +178,82 @@ if (($_POST['action'] ?? '') === 'create_client') {
         } else {
             $errors[] = 'Falha ao salvar cadastro de cliente.';
         }
+    }
+}
+
+$editId = trim((string) ($_GET['edit'] ?? ''));
+if ($editId !== '') {
+    foreach ($clients as $client) {
+        if (($client['id'] ?? '') !== $editId) {
+            continue;
+        }
+
+        foreach ($form as $key => $_) {
+            $form[$key] = (string) ($client[$key] ?? '');
+        }
+        break;
+    }
+}
+
+if (($_POST['action'] ?? '') === 'update_client') {
+    $editId = trim((string) ($_POST['client_id'] ?? ''));
+    foreach ($form as $key => $_) {
+        $form[$key] = trim((string) ($_POST[$key] ?? ''));
+    }
+
+    $clientIndex = null;
+    foreach ($clients as $index => $client) {
+        if (($client['id'] ?? '') === $editId) {
+            $clientIndex = $index;
+            break;
+        }
+    }
+
+    if ($clientIndex === null) {
+        $errors[] = 'Cliente nao encontrado.';
+    } else {
+        $errors = validateClientData($form, $clients, $editId);
+    }
+
+    if (!$errors && $clientIndex !== null) {
+        $clients[$clientIndex] = array_merge($clients[$clientIndex], $form, [
+            'nif' => normalizeNif($form['nif']),
+            'email' => strtolower($form['email']),
+            'status' => 'ativo',
+            'last_updated_at' => $now->format(DateTimeInterface::ATOM),
+        ]);
+
+        if (saveClients($clientsFile, $clients)) {
+            $success = 'Dados do cliente atualizados. Status: ativo.';
+            $editId = '';
+        } else {
+            $errors[] = 'Falha ao salvar atualizacao do cliente.';
+        }
+    }
+}
+
+if (($_POST['action'] ?? '') === 'mark_updated' || ($_POST['action'] ?? '') === 'change_client_status') {
+    $clientId = trim((string) ($_POST['client_id'] ?? ''));
+    foreach ($clients as $index => $client) {
+        if (($client['id'] ?? '') !== $clientId) {
+            continue;
+        }
+
+        if (($_POST['action'] ?? '') === 'mark_updated') {
+            $clients[$index]['status'] = 'ativo';
+            $clients[$index]['last_updated_at'] = $now->format(DateTimeInterface::ATOM);
+            $success = 'Cliente marcado como atualizado. Status: ativo.';
+        } else {
+            $newStatus = ($_POST['status'] ?? '') === 'cancelado' ? 'cancelado' : 'ativo';
+            $clients[$index]['status'] = $newStatus;
+            $success = $newStatus === 'cancelado' ? 'Cliente cancelado.' : 'Cliente reativado.';
+        }
+
+        if (!saveClients($clientsFile, $clients)) {
+            $errors[] = 'Falha ao atualizar status do cliente.';
+            $success = null;
+        }
+        break;
     }
 }
 ?>
@@ -265,6 +375,52 @@ if (($_POST['action'] ?? '') === 'create_client') {
             cursor: pointer;
         }
 
+        .btn-danger {
+            background: transparent;
+            border-color: var(--err);
+            color: var(--text);
+        }
+
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .status-ativo {
+            color: #78c99e;
+            background: rgba(93, 179, 139, 0.15);
+        }
+
+        .status-cancelado {
+            color: #ef9797;
+            background: rgba(213, 111, 111, 0.15);
+        }
+
+        .status-pendente_atualizacao {
+            color: #e8c981;
+            background: rgba(201, 169, 110, 0.15);
+        }
+
+        .row-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .row-actions form {
+            display: inline;
+        }
+
+        .row-actions button,
+        .row-actions a {
+            padding: 7px 9px;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
         .notice {
             border-radius: 10px;
             padding: 12px;
@@ -336,7 +492,11 @@ if (($_POST['action'] ?? '') === 'create_client') {
             <?php endforeach; ?>
 
             <form method="post" autocomplete="off">
-                <input type="hidden" name="action" value="create_client">
+                <input type="hidden" name="action" value="<?= $editId !== '' ? 'update_client' : 'create_client' ?>">
+                <?php if ($editId !== ''): ?>
+                    <input type="hidden" name="client_id" value="<?= h($editId) ?>">
+                    <p class="notice ok">A editar cliente. Ao guardar, os dados ficam atualizados e o status passa para ativo.</p>
+                <?php endif; ?>
                 <div class="form-grid">
                     <div class="field">
                         <label for="first_name">Nome *</label>
@@ -380,7 +540,7 @@ if (($_POST['action'] ?? '') === 'create_client') {
                     </div>
 
                     <div class="field full">
-                        <button type="submit">Guardar cliente</button>
+                        <button type="submit"><?= $editId !== '' ? 'Atualizar cliente' : 'Guardar cliente' ?></button>
                     </div>
                 </div>
             </form>
@@ -400,6 +560,8 @@ if (($_POST['action'] ?? '') === 'create_client') {
                             <th>Codigo postal</th>
                             <th>Municipio</th>
                             <th>Conselho</th>
+                            <th>Status</th>
+                            <th>Acoes</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -414,6 +576,35 @@ if (($_POST['action'] ?? '') === 'create_client') {
                                 <td><?= h((string) ($client['postal_code'] ?? '')) ?></td>
                                 <td><?= h((string) ($client['municipio'] ?? '')) ?></td>
                                 <td><?= h((string) ($client['conselho'] ?? '')) ?></td>
+                                <?php $status = clientStatus($client, $now); ?>
+                                <td><span class="status status-<?= h($status) ?>"><?= h(str_replace('_', ' ', $status)) ?></span></td>
+                                <td>
+                                    <div class="row-actions">
+                                        <a class="btn-ghost" href="?edit=<?= h((string) $client['id']) ?>">Editar</a>
+                                        <?php if ($status === 'pendente_atualizacao'): ?>
+                                            <form method="post">
+                                                <input type="hidden" name="action" value="mark_updated">
+                                                <input type="hidden" name="client_id" value="<?= h((string) $client['id']) ?>">
+                                                <button type="submit">Atualizado</button>
+                                            </form>
+                                        <?php endif; ?>
+                                        <?php if ($status === 'cancelado'): ?>
+                                            <form method="post">
+                                                <input type="hidden" name="action" value="change_client_status">
+                                                <input type="hidden" name="client_id" value="<?= h((string) $client['id']) ?>">
+                                                <input type="hidden" name="status" value="ativo">
+                                                <button type="submit">Reativar</button>
+                                            </form>
+                                        <?php else: ?>
+                                            <form method="post">
+                                                <input type="hidden" name="action" value="change_client_status">
+                                                <input type="hidden" name="client_id" value="<?= h((string) $client['id']) ?>">
+                                                <input type="hidden" name="status" value="cancelado">
+                                                <button type="submit" class="btn-danger">Cancelar</button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>

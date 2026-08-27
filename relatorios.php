@@ -282,6 +282,25 @@ usort($results, static function (array $a, array $b): int {
             white-space: nowrap;
         }
 
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: capitalize;
+        }
+
+        .status-reservado {
+            color: #e8c981;
+            background: rgba(201, 169, 110, 0.15);
+        }
+
+        .status-contratado {
+            color: #78c99e;
+            background: rgba(93, 179, 139, 0.15);
+        }
+
         @media (max-width: 900px) {
             .filters {
                 grid-template-columns: repeat(2, 1fr);
@@ -360,6 +379,7 @@ usort($results, static function (array $a, array $b): int {
                                 <th>Telefone</th>
                                 <th>Sala / espaco</th>
                                 <th>Tipo</th>
+                                <th>Status</th>
                                 <th>Inicio</th>
                                 <th>Fim</th>
                                 <th>Subtotal</th>
@@ -377,6 +397,7 @@ usort($results, static function (array $a, array $b): int {
                                     <td><?= h((string) ($client['phone'] ?? '')) ?></td>
                                     <td><?= h((string) ($booking['space_label'] ?? $spaces[$booking['space'] ?? ''] ?? '')) ?></td>
                                     <td><?= h((string) ($booking['rental_type_label'] ?? '')) ?></td>
+                                    <td><span class="status status-<?= h(($booking['rental_type'] ?? '') === 'monthly' || ($booking['status'] ?? '') === 'contratado' ? 'contratado' : 'reservado') ?>"><?= h(($booking['rental_type'] ?? '') === 'monthly' || ($booking['status'] ?? '') === 'contratado' ? 'contratado' : 'reservado') ?></span></td>
                                     <td><?= h((new DateTimeImmutable($booking['start']))->format('d/m/Y H:i')) ?></td>
                                     <td><?= h((new DateTimeImmutable($booking['end']))->format('d/m/Y H:i')) ?></td>
                                     <td class="money"><?= number_format((float) ($booking['subtotal'] ?? 0), 2, ',', '.') ?> EUR</td>

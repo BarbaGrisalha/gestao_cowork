@@ -91,6 +91,28 @@ function clientDisplayName(array $client): string
     return trim($first . ' ' . $last);
 }
 
+function clientStatus(array $client, ?DateTimeImmutable $now = null): string
+{
+    if (($client['status'] ?? '') === 'cancelado') {
+        return 'cancelado';
+    }
+
+    $now ??= new DateTimeImmutable('now');
+    $lastUpdatedRaw = (string) ($client['last_updated_at'] ?? $client['created_at'] ?? '');
+    $lastUpdated = DateTimeImmutable::createFromFormat(DateTimeInterface::ATOM, $lastUpdatedRaw);
+
+    return $lastUpdated !== false && $lastUpdated->modify('+12 months') > $now ? 'ativo' : 'pendente_atualizacao';
+}
+
+function bookingStatus(array $booking): string
+{
+    if (($booking['rental_type'] ?? '') === 'monthly') {
+        return 'contratado';
+    }
+
+    return ($booking['status'] ?? '') === 'contratado' ? 'contratado' : 'reservado';
+}
+
 function bookingOccursOnDate(array $booking, DateTimeImmutable $date): bool
 {
     if (!isset($booking['start'], $booking['end'])) {
@@ -265,7 +287,7 @@ $bookings = loadBookings($bookingsFile);
 $clients = loadClients($clientsFile);
 $clientsById = [];
 foreach ($clients as $client) {
-    if (isset($client['id'])) {
+    if (isset($client['id']) && clientStatus($client) === 'ativo') {
         $clientsById[$client['id']] = $client;
     }
 }
@@ -278,7 +300,7 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
     $endRaw = trim((string) ($_POST['end_datetime'] ?? ''));
 
     if ($clientId === '' || !isset($clientsById[$clientId])) {
-        $errors[] = 'Selecione um cliente valido a partir do cadastro.';
+        $errors[] = 'Selecione um cliente ativo a partir do cadastro.';
     }
 
     if (!isset($spaces[$space])) {
@@ -352,7 +374,16 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
             static fn(array $b): bool => ($b['space'] ?? '') === $space
         ));
 
-        $maxConcurrent = maxConcurrentWithCandidate($sameSpaceBookings, $normalizedStart, $normalizedEnd);
+        $lockedHourlyBookings = array_values(array_filter(
+            $sameSpaceBookings,
+            static fn(array $b): bool => ($b['rental_type'] ?? '') === 'hourly' && bookingStatus($b) === 'contratado'
+        ));
+        $availablePeriodBookings = array_values(array_filter(
+            $sameSpaceBookings,
+            static fn(array $b): bool => !in_array($b, $lockedHourlyBookings, true)
+        ));
+
+        $maxConcurrent = count($lockedHourlyBookings) + maxConcurrentWithCandidate($availablePeriodBookings, $normalizedStart, $normalizedEnd);
         if ($maxConcurrent > $spaces[$space]['capacity']) {
             if ($space === 'open_space') {
                 $errors[] = 'Limite do Open Space excedido. Maximo de 20 pessoas simultaneas.';
@@ -376,6 +407,7 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
                 'space_label' => $spaces[$space]['label'],
                 'rental_type' => $rentalType,
                 'rental_type_label' => $rentalTypeLabels[$rentalType],
+                'status' => $rentalType === 'monthly' ? 'contratado' : 'reservado',
                 'start' => $normalizedStart->format(DateTimeInterface::ATOM),
                 'end' => $normalizedEnd->format(DateTimeInterface::ATOM),
                 'subtotal' => $subtotal,
@@ -397,8 +429,47 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
     }
 }
 
+if ($isAuthenticated && ($_POST['action'] ?? '') === 'resolve_hourly_booking') {
+    $bookingId = trim((string) ($_POST['booking_id'] ?? ''));
+    $decision = (string) ($_POST['decision'] ?? '');
+
+    foreach ($bookings as $bookingIndex => $booking) {
+        if (($booking['id'] ?? '') !== $bookingId || ($booking['rental_type'] ?? '') !== 'hourly') {
+            continue;
+        }
+
+        if ($decision === 'yes') {
+            $bookings[$bookingIndex]['status'] = 'contratado';
+            $success = 'Reserva horaria marcada como contratado.';
+        } elseif ($decision === 'no') {
+            array_splice($bookings, $bookingIndex, 1);
+            $success = 'Reserva horaria cancelada e espaco liberado.';
+        } else {
+            $errors[] = 'Decisao invalida para a reserva horaria.';
+            break;
+        }
+
+        if (!saveBookings($bookingsFile, $bookings)) {
+            $errors[] = 'Falha ao atualizar a reserva horaria.';
+            $success = null;
+        }
+        break;
+    }
+}
+
 $bookingsBySpace = [];
 $today = new DateTimeImmutable('today');
+$now = new DateTimeImmutable('now');
+$pendingHourlyBookings = [];
+foreach ($bookings as $booking) {
+    if (($booking['rental_type'] ?? '') === 'hourly'
+        && bookingStatus($booking) === 'reservado'
+        && isset($booking['end'])
+        && new DateTimeImmutable($booking['end']) <= $now
+    ) {
+        $pendingHourlyBookings[] = $booking;
+    }
+}
 foreach ($spaces as $spaceKey => $spaceInfo) {
     $bookingsBySpace[$spaceKey] = array_values(array_filter(
         $bookings,
@@ -417,7 +488,8 @@ $roundedTimestamp = (int) (ceil($nowDefault->getTimestamp() / 300) * 300);
 $nowDefault = (new DateTimeImmutable('now'))->setTimestamp($roundedTimestamp);
 $defaultStartValue = toDatetimeLocalValue($nowDefault);
 $defaultEndValue = toDatetimeLocalValue($nowDefault->modify('+1 hour'));
-$hasClients = count($clients) > 0;
+$activeClients = array_values(array_filter($clients, static fn(array $client): bool => clientStatus($client) === 'ativo'));
+$hasClients = count($activeClients) > 0;
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -621,6 +693,83 @@ $hasClients = count($clients) > 0;
             margin-top: 8px;
         }
 
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: capitalize;
+        }
+
+        .status-reservado {
+            color: #e8c981;
+            background: rgba(201, 169, 110, 0.15);
+        }
+
+        .status-contratado {
+            color: #78c99e;
+            background: rgba(93, 179, 139, 0.15);
+        }
+
+        .alert-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: grid;
+            place-items: center;
+            padding: 20px;
+            background: rgba(5, 10, 12, 0.78);
+        }
+
+        .alert-box {
+            width: min(620px, 100%);
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 24px;
+            border: 1px solid var(--gold);
+            border-radius: 14px;
+            background: var(--panel);
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+        }
+
+        .alert-box h2 {
+            margin-bottom: 8px;
+        }
+
+        .pending-booking {
+            display: grid;
+            gap: 6px;
+            margin-top: 16px;
+            padding: 14px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: var(--card);
+        }
+
+        .pending-booking span {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .alert-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        .alert-actions button {
+            padding: 9px 12px;
+            font-size: 13px;
+        }
+
+        .alert-actions .btn-danger {
+            color: var(--text);
+            background: transparent;
+            border-color: var(--err);
+        }
+
         @media (max-width: 980px) {
 
             .form-grid,
@@ -700,7 +849,7 @@ $hasClients = count($clients) > 0;
                             <label for="client_id">Selecionar cliente registado</label>
                             <select id="client_id" name="client_id" required <?= $hasClients ? '' : 'disabled' ?>>
                                 <option value="">Selecione...</option>
-                                <?php foreach ($clients as $client): ?>
+                                <?php foreach ($activeClients as $client): ?>
                                     <?php $displayName = clientDisplayName($client); ?>
                                     <option value="<?= h((string) $client['id']) ?>"><?= h($displayName) ?> · NIF <?= h((string) ($client['nif'] ?? '')) ?></option>
                                 <?php endforeach; ?>
@@ -762,7 +911,7 @@ $hasClients = count($clients) > 0;
                                         <th>Cliente</th>
                                         <th>Tipo</th>
                                         <th>Periodo</th>
-                                        <th>Total</th>
+                                        <th>Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -775,7 +924,7 @@ $hasClients = count($clients) > 0;
                                             <td><?= h($booking['client_name']) ?></td>
                                             <td><?= h($booking['rental_type_label']) ?></td>
                                             <td><?= h($startView) ?> - <?= h($endView) ?></td>
-                                            <td><?= number_format((float) $booking['total'], 2, ',', '.') ?> EUR</td>
+                                            <td><span class="status status-<?= h(bookingStatus($booking)) ?>"><?= h(bookingStatus($booking)) ?></span></td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
@@ -785,6 +934,35 @@ $hasClients = count($clients) > 0;
                 <?php endforeach; ?>
             </section>
             <p class="muted" style="margin-top: 16px;">O painel mostra reservas de hoje e futuras. Use <a href="relatorios.php" style="color:var(--gold);">Relatorios (inclui historico)</a> para consultar locacoes passadas.</p>
+
+            <?php if ($pendingHourlyBookings): ?>
+                <div class="alert-overlay" role="dialog" aria-modal="true" aria-labelledby="hourlyAlertTitle">
+                    <div class="alert-box">
+                        <h2 id="hourlyAlertTitle">Confirmacao de reservas horarias</h2>
+                        <p>O horario destas reservas terminou. O cliente pretende contratar o espaco?</p>
+                        <?php foreach ($pendingHourlyBookings as $pendingBooking): ?>
+                            <div class="pending-booking">
+                                <strong><?= h($pendingBooking['client_name']) ?></strong>
+                                <span><?= h($pendingBooking['space_label'] ?? '') ?> · terminou em <?= h((new DateTimeImmutable($pendingBooking['end']))->format('d/m/Y H:i')) ?></span>
+                                <div class="alert-actions">
+                                    <form method="post">
+                                        <input type="hidden" name="action" value="resolve_hourly_booking">
+                                        <input type="hidden" name="booking_id" value="<?= h((string) $pendingBooking['id']) ?>">
+                                        <input type="hidden" name="decision" value="yes">
+                                        <button type="submit">Contratado: Sim</button>
+                                    </form>
+                                    <form method="post">
+                                        <input type="hidden" name="action" value="resolve_hourly_booking">
+                                        <input type="hidden" name="booking_id" value="<?= h((string) $pendingBooking['id']) ?>">
+                                        <input type="hidden" name="decision" value="no">
+                                        <button type="submit" class="btn-danger">Contratado: Nao</button>
+                                    </form>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
         <?php endif; ?>
     </div>
 
