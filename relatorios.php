@@ -313,7 +313,7 @@ usort($results, static function (array $a, array $b): int {
                     <p>Consulte o historico por cliente, sala/espaco, NIF ou data.</p>
                 </div>
                 <div class="links">
-                    <a class="btn-ghost" href="index.php">Agenda de hoje</a>
+                    <a class="btn-ghost" href="index.php">Retorno a Locações</a>
                     <a class="btn-ghost" href="clientes.php">Clientes</a>
                 </div>
             </div>
