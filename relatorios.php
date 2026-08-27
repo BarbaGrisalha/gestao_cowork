@@ -41,6 +41,19 @@ function normalizeNif(string $nif): string
     return preg_replace('/\D+/', '', $nif) ?? '';
 }
 
+function bookingStatus(array $booking): string
+{
+    if (($booking['status'] ?? '') === 'cancelado') {
+        return 'cancelado';
+    }
+
+    if (($booking['rental_type'] ?? '') === 'monthly') {
+        return 'contratado';
+    }
+
+    return ($booking['status'] ?? '') === 'contratado' ? 'contratado' : 'reservado';
+}
+
 function bookingOccursOnDate(array $booking, DateTimeImmutable $date): bool
 {
     if (!isset($booking['start'], $booking['end'])) {
@@ -82,6 +95,7 @@ $filters = [
     'space' => trim((string) ($_GET['space'] ?? '')),
     'nif' => normalizeNif(trim((string) ($_GET['nif'] ?? ''))),
     'date' => trim((string) ($_GET['date'] ?? '')),
+    'financial' => (string) ($_GET['financial'] ?? '') === '1',
 ];
 
 $reportDate = null;
@@ -111,6 +125,10 @@ foreach ($bookings as $booking) {
         continue;
     }
 
+    if ($filters['financial'] && bookingStatus($booking) !== 'contratado') {
+        continue;
+    }
+
     $booking['_client_name'] = $clientName;
     $booking['_client_nif'] = $clientNif;
     $results[] = $booking;
@@ -119,6 +137,17 @@ foreach ($bookings as $booking) {
 usort($results, static function (array $a, array $b): int {
     return strcmp((string) ($a['start'] ?? ''), (string) ($b['start'] ?? ''));
 });
+
+$financialSubtotal = 0.0;
+$financialVat = 0.0;
+$financialTotal = 0.0;
+foreach ($results as $booking) {
+    if (bookingStatus($booking) === 'contratado') {
+        $financialSubtotal += (float) ($booking['subtotal'] ?? 0);
+        $financialVat += (float) ($booking['vat'] ?? 0);
+        $financialTotal += (float) ($booking['total'] ?? 0);
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -301,6 +330,28 @@ usort($results, static function (array $a, array $b): int {
             background: rgba(93, 179, 139, 0.15);
         }
 
+        .status-cancelado {
+            color: #ef9797;
+            background: rgba(213, 111, 111, 0.15);
+        }
+
+        .finance-box {
+            display: flex;
+            gap: 18px;
+            flex-wrap: wrap;
+            margin: 18px 0 8px;
+            padding: 14px;
+            border: 1px solid rgba(93, 179, 139, 0.35);
+            border-radius: 10px;
+            background: rgba(93, 179, 139, 0.08);
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .finance-box strong {
+            color: var(--text);
+        }
+
         @media (max-width: 900px) {
             .filters {
                 grid-template-columns: repeat(2, 1fr);
@@ -334,10 +385,14 @@ usort($results, static function (array $a, array $b): int {
                 <div class="links">
                     <a class="btn-ghost" href="index.php">Retorno a Locações</a>
                     <a class="btn-ghost" href="clientes.php">Clientes</a>
+                    <a class="btn-ghost" href="?financial=1" style="border-color:var(--gold); color:var(--gold);">Financeiro / Faturamento</a>
                 </div>
             </div>
 
             <form class="filters" method="get">
+                <?php if ($filters['financial']): ?>
+                    <input type="hidden" name="financial" value="1">
+                <?php endif; ?>
                 <div class="field">
                     <label for="client">Nome + apelido</label>
                     <input id="client" name="client" type="search" placeholder="Ex.: Ana Silva" value="<?= h($filters['client']) ?>">
@@ -364,7 +419,16 @@ usort($results, static function (array $a, array $b): int {
                 </div>
             </form>
 
-            <div class="summary"><?= count($results) ?> agendamento(s) encontrado(s).</div>
+            <?php if ($filters['financial']): ?>
+                <div class="finance-box">
+                    <span>Registos faturaveis: <strong><?= count($results) ?></strong></span>
+                    <span>Subtotal: <strong><?= number_format($financialSubtotal, 2, ',', '.') ?> EUR</strong></span>
+                    <span>IVA: <strong><?= number_format($financialVat, 2, ',', '.') ?> EUR</strong></span>
+                    <span>Total: <strong><?= number_format($financialTotal, 2, ',', '.') ?> EUR</strong></span>
+                </div>
+            <?php endif; ?>
+
+            <div class="summary"><?= count($results) ?> agendamento(s) encontrado(s)<?= $filters['financial'] ? ' no faturamento' : '' ?>.</div>
 
             <?php if (!$results): ?>
                 <div class="empty">Nenhum agendamento corresponde aos filtros.</div>
@@ -380,6 +444,8 @@ usort($results, static function (array $a, array $b): int {
                                 <th>Sala / espaco</th>
                                 <th>Tipo</th>
                                 <th>Status</th>
+                                <th>Confirmacao de uso</th>
+                                <th>Faturamento</th>
                                 <th>Inicio</th>
                                 <th>Fim</th>
                                 <th>Subtotal</th>
@@ -397,7 +463,10 @@ usort($results, static function (array $a, array $b): int {
                                     <td><?= h((string) ($client['phone'] ?? '')) ?></td>
                                     <td><?= h((string) ($booking['space_label'] ?? $spaces[$booking['space'] ?? ''] ?? '')) ?></td>
                                     <td><?= h((string) ($booking['rental_type_label'] ?? '')) ?></td>
-                                    <td><span class="status status-<?= h(($booking['rental_type'] ?? '') === 'monthly' || ($booking['status'] ?? '') === 'contratado' ? 'contratado' : 'reservado') ?>"><?= h(($booking['rental_type'] ?? '') === 'monthly' || ($booking['status'] ?? '') === 'contratado' ? 'contratado' : 'reservado') ?></span></td>
+                                    <?php $status = bookingStatus($booking); ?>
+                                    <td><span class="status status-<?= h($status) ?>"><?= h($status) ?></span></td>
+                                    <td><?= h(($booking['usage_confirmation'] ?? ($status === 'contratado' ? 'sim' : 'pendente')) === 'sim' ? 'Sim' : (($booking['usage_confirmation'] ?? '') === 'nao' ? 'Nao' : 'Pendente')) ?></td>
+                                    <td><?= $status === 'contratado' ? 'Sim' : 'Nao' ?></td>
                                     <td><?= h((new DateTimeImmutable($booking['start']))->format('d/m/Y H:i')) ?></td>
                                     <td><?= h((new DateTimeImmutable($booking['end']))->format('d/m/Y H:i')) ?></td>
                                     <td class="money"><?= number_format((float) ($booking['subtotal'] ?? 0), 2, ',', '.') ?> EUR</td>

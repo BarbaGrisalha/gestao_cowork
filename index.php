@@ -106,6 +106,10 @@ function clientStatus(array $client, ?DateTimeImmutable $now = null): string
 
 function bookingStatus(array $booking): string
 {
+    if (($booking['status'] ?? '') === 'cancelado') {
+        return 'cancelado';
+    }
+
     if (($booking['rental_type'] ?? '') === 'monthly') {
         return 'contratado';
     }
@@ -371,7 +375,7 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
 
         $sameSpaceBookings = array_values(array_filter(
             $bookings,
-            static fn(array $b): bool => ($b['space'] ?? '') === $space
+            static fn(array $b): bool => ($b['space'] ?? '') === $space && bookingStatus($b) !== 'cancelado'
         ));
 
         $lockedHourlyBookings = array_values(array_filter(
@@ -408,6 +412,7 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
                 'rental_type' => $rentalType,
                 'rental_type_label' => $rentalTypeLabels[$rentalType],
                 'status' => $rentalType === 'monthly' ? 'contratado' : 'reservado',
+                'usage_confirmation' => $rentalType === 'monthly' ? 'sim' : 'pendente',
                 'start' => $normalizedStart->format(DateTimeInterface::ATOM),
                 'end' => $normalizedEnd->format(DateTimeInterface::ATOM),
                 'subtotal' => $subtotal,
@@ -440,10 +445,12 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'resolve_hourly_booking') {
 
         if ($decision === 'yes') {
             $bookings[$bookingIndex]['status'] = 'contratado';
+            $bookings[$bookingIndex]['usage_confirmation'] = 'sim';
             $success = 'Reserva horaria marcada como contratado.';
         } elseif ($decision === 'no') {
-            array_splice($bookings, $bookingIndex, 1);
-            $success = 'Reserva horaria cancelada e espaco liberado.';
+            $bookings[$bookingIndex]['status'] = 'reservado';
+            $bookings[$bookingIndex]['usage_confirmation'] = 'nao';
+            $success = 'Reserva mantida como reservado. O espaco ficou disponivel para nova locacao.';
         } else {
             $errors[] = 'Decisao invalida para a reserva horaria.';
             break;
@@ -452,6 +459,24 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'resolve_hourly_booking') {
         if (!saveBookings($bookingsFile, $bookings)) {
             $errors[] = 'Falha ao atualizar a reserva horaria.';
             $success = null;
+        }
+        break;
+    }
+}
+
+if ($isAuthenticated && ($_POST['action'] ?? '') === 'cancel_booking') {
+    $bookingId = trim((string) ($_POST['booking_id'] ?? ''));
+    foreach ($bookings as $bookingIndex => $booking) {
+        if (($booking['id'] ?? '') !== $bookingId) {
+            continue;
+        }
+
+        $bookings[$bookingIndex]['status'] = 'cancelado';
+        $bookings[$bookingIndex]['usage_confirmation'] = 'nao';
+        if (saveBookings($bookingsFile, $bookings)) {
+            $success = 'Reserva cancelada. O espaco ficou disponivel.';
+        } else {
+            $errors[] = 'Falha ao cancelar a reserva.';
         }
         break;
     }
@@ -478,7 +503,7 @@ foreach ($spaces as $spaceKey => $spaceInfo) {
                 return false;
             }
 
-            return new DateTimeImmutable($b['end']) > $today;
+            return bookingStatus($b) !== 'cancelado' && new DateTimeImmutable($b['end']) > $today;
         }
     ));
 }
@@ -712,6 +737,11 @@ $hasClients = count($activeClients) > 0;
             background: rgba(93, 179, 139, 0.15);
         }
 
+        .status-cancelado {
+            color: #ef9797;
+            background: rgba(213, 111, 111, 0.15);
+        }
+
         .alert-overlay {
             position: fixed;
             inset: 0;
@@ -912,6 +942,8 @@ $hasClients = count($activeClients) > 0;
                                         <th>Tipo</th>
                                         <th>Periodo</th>
                                         <th>Status</th>
+                                        <th>Confirmacao</th>
+                                        <th>Acao</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -925,6 +957,18 @@ $hasClients = count($activeClients) > 0;
                                             <td><?= h($booking['rental_type_label']) ?></td>
                                             <td><?= h($startView) ?> - <?= h($endView) ?></td>
                                             <td><span class="status status-<?= h(bookingStatus($booking)) ?>"><?= h(bookingStatus($booking)) ?></span></td>
+                                            <td><?= h(($booking['usage_confirmation'] ?? 'pendente') === 'sim' ? 'Sim' : (($booking['usage_confirmation'] ?? '') === 'nao' ? 'Nao' : 'Pendente')) ?></td>
+                                            <td>
+                                                <?php if (bookingStatus($booking) !== 'cancelado'): ?>
+                                                    <form method="post">
+                                                        <input type="hidden" name="action" value="cancel_booking">
+                                                        <input type="hidden" name="booking_id" value="<?= h((string) $booking['id']) ?>">
+                                                        <button type="submit" class="btn-danger">Cancelar</button>
+                                                    </form>
+                                                <?php else: ?>
+                                                    <span class="muted">Cancelado</span>
+                                                <?php endif; ?>
+                                            </td>
                                         </tr>
                                     <?php endforeach; ?>
                                 </tbody>
