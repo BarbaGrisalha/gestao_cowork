@@ -91,6 +91,20 @@ function clientDisplayName(array $client): string
     return trim($first . ' ' . $last);
 }
 
+function bookingOccursOnDate(array $booking, DateTimeImmutable $date): bool
+{
+    if (!isset($booking['start'], $booking['end'])) {
+        return false;
+    }
+
+    $dayStart = $date->setTime(0, 0);
+    $dayEnd = $dayStart->modify('+1 day');
+    $bookingStart = new DateTimeImmutable($booking['start']);
+    $bookingEnd = new DateTimeImmutable($booking['end']);
+
+    return $bookingStart < $dayEnd && $bookingEnd > $dayStart;
+}
+
 function h(?string $value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
@@ -384,10 +398,11 @@ if ($isAuthenticated && ($_POST['action'] ?? '') === 'create_booking') {
 }
 
 $bookingsBySpace = [];
+$today = new DateTimeImmutable('today');
 foreach ($spaces as $spaceKey => $spaceInfo) {
     $bookingsBySpace[$spaceKey] = array_values(array_filter(
         $bookings,
-        static fn(array $b): bool => ($b['space'] ?? '') === $spaceKey
+        static fn(array $b): bool => ($b['space'] ?? '') === $spaceKey && bookingOccursOnDate($b, $today)
     ));
 }
 
@@ -645,10 +660,11 @@ $hasClients = count($clients) > 0;
                 <div class="topbar">
                     <div>
                         <h1>Painel de Administracao</h1>
-                        <p>Locacoes: segunda a sexta, das 08:30h as 19:30h</p>
+                        <p>Agenda de hoje (<?= h($today->format('d/m/Y')) ?>) · segunda a sexta, das 08:30h as 19:30h</p>
                     </div>
                     <div style="display:flex; gap:10px; flex-wrap:wrap;">
                         <a class="btn-ghost" href="clientes.php">Cadastro de Clientes</a>
+                        <a class="btn-ghost" href="relatorios.php">Relatorios</a>
                         <a class="btn-ghost" href="?logout=1">Terminar sessao</a>
                     </div>
                 </div>
@@ -762,6 +778,7 @@ $hasClients = count($clients) > 0;
                     </article>
                 <?php endforeach; ?>
             </section>
+            <p class="muted" style="margin-top: 16px;">O painel mostra somente os agendamentos de hoje. Use Relatorios para consultar outros dias e periodos.</p>
         <?php endif; ?>
     </div>
 
