@@ -402,7 +402,13 @@ $today = new DateTimeImmutable('today');
 foreach ($spaces as $spaceKey => $spaceInfo) {
     $bookingsBySpace[$spaceKey] = array_values(array_filter(
         $bookings,
-        static fn(array $b): bool => ($b['space'] ?? '') === $spaceKey && bookingOccursOnDate($b, $today)
+        static function (array $b) use ($spaceKey, $today): bool {
+            if (($b['space'] ?? '') !== $spaceKey || !isset($b['end'])) {
+                return false;
+            }
+
+            return new DateTimeImmutable($b['end']) > $today;
+        }
     ));
 }
 
@@ -660,11 +666,11 @@ $hasClients = count($clients) > 0;
                 <div class="topbar">
                     <div>
                         <h1>Painel de Administracao</h1>
-                        <p>Agenda de hoje (<?= h($today->format('d/m/Y')) ?>) · segunda a sexta, das 08:30h as 19:30h</p>
+                        <p>Reservas de hoje (<?= h($today->format('d/m/Y')) ?>) em diante · segunda a sexta, das 08:30h as 19:30h</p>
                     </div>
                     <div style="display:flex; gap:10px; flex-wrap:wrap;">
                         <a class="btn-ghost" href="clientes.php">Cadastro de Clientes</a>
-                        <a class="btn-ghost" href="relatorios.php">Relatorios</a>
+                        <a class="btn-ghost" href="relatorios.php" style="border-color:var(--gold); color:var(--gold);">Relatorios (inclui historico)</a>
                         <a class="btn-ghost" href="?logout=1">Terminar sessao</a>
                     </div>
                 </div>
@@ -778,7 +784,7 @@ $hasClients = count($clients) > 0;
                     </article>
                 <?php endforeach; ?>
             </section>
-            <p class="muted" style="margin-top: 16px;">O painel mostra somente os agendamentos de hoje. Use Relatorios para consultar outros dias e periodos.</p>
+            <p class="muted" style="margin-top: 16px;">O painel mostra reservas de hoje e futuras. Use <a href="relatorios.php" style="color:var(--gold);">Relatorios (inclui historico)</a> para consultar locacoes passadas.</p>
         <?php endif; ?>
     </div>
 
