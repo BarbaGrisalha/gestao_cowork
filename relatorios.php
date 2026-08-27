@@ -94,13 +94,27 @@ $filters = [
     'client' => trim((string) ($_GET['client'] ?? '')),
     'space' => trim((string) ($_GET['space'] ?? '')),
     'nif' => normalizeNif(trim((string) ($_GET['nif'] ?? ''))),
-    'date' => trim((string) ($_GET['date'] ?? '')),
+    'date_start' => trim((string) ($_GET['date_start'] ?? '')),
+    'date_end' => trim((string) ($_GET['date_end'] ?? '')),
     'financial' => (string) ($_GET['financial'] ?? '') === '1',
 ];
 
-$reportDate = null;
-if ($filters['date'] !== '') {
-    $reportDate = DateTimeImmutable::createFromFormat('Y-m-d', $filters['date']) ?: null;
+$reportStart = null;
+$reportEnd = null;
+if ($filters['date_start'] !== '') {
+    $reportStart = DateTimeImmutable::createFromFormat('!Y-m-d', $filters['date_start']) ?: null;
+}
+if ($filters['date_end'] !== '') {
+    $reportEnd = DateTimeImmutable::createFromFormat('!Y-m-d', $filters['date_end']) ?: null;
+}
+
+$dateError = null;
+if ($filters['date_start'] !== '' && $reportStart === null) {
+    $dateError = 'Data inicial invalida.';
+} elseif ($filters['date_end'] !== '' && $reportEnd === null) {
+    $dateError = 'Data final invalida.';
+} elseif ($reportStart !== null && $reportEnd !== null && $reportStart > $reportEnd) {
+    $dateError = 'A data inicial deve ser anterior ou igual a data final.';
 }
 
 $results = [];
@@ -121,7 +135,16 @@ foreach ($bookings as $booking) {
         continue;
     }
 
-    if ($reportDate !== null && !bookingOccursOnDate($booking, $reportDate)) {
+    if ($dateError !== null) {
+        continue;
+    }
+
+    $bookingStart = new DateTimeImmutable($booking['start']);
+    $bookingEnd = new DateTimeImmutable($booking['end']);
+    if ($reportStart !== null && $bookingEnd <= $reportStart) {
+        continue;
+    }
+    if ($reportEnd !== null && $bookingStart >= $reportEnd->modify('+1 day')) {
         continue;
     }
 
@@ -229,7 +252,7 @@ foreach ($results as $booking) {
 
         .filters {
             display: grid;
-            grid-template-columns: 1.5fr 1.2fr 1fr 1fr auto;
+            grid-template-columns: 1.4fr 1.2fr 1fr 1fr 1fr auto;
             gap: 12px;
             align-items: end;
             padding: 16px;
@@ -411,13 +434,21 @@ foreach ($results as $booking) {
                     <input id="nif" name="nif" inputmode="numeric" value="<?= h($filters['nif']) ?>" placeholder="123456789">
                 </div>
                 <div class="field">
-                    <label for="date">Data</label>
-                    <input id="date" name="date" type="date" value="<?= h($filters['date']) ?>">
+                    <label for="date_start">Data inicial</label>
+                    <input id="date_start" name="date_start" type="date" value="<?= h($filters['date_start']) ?>">
+                </div>
+                <div class="field">
+                    <label for="date_end">Data final</label>
+                    <input id="date_end" name="date_end" type="date" value="<?= h($filters['date_end']) ?>">
                 </div>
                 <div class="field">
                     <button type="submit">Filtrar</button>
                 </div>
             </form>
+
+            <?php if ($dateError !== null): ?>
+                <div class="summary" style="color:#ef9797;"><?= h($dateError) ?></div>
+            <?php endif; ?>
 
             <?php if ($filters['financial']): ?>
                 <div class="finance-box">
